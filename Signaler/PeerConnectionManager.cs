@@ -8,6 +8,7 @@ using NAudio.Wave;
 using Signaler.Hubs;
 using Signaler.Models;
 using SIPSorcery.Net;
+using SIPSorcery.Media;
 using SIPSorceryMedia.Abstractions;
 using System;
 using System.Collections.Concurrent;
@@ -15,6 +16,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using static Signaler.Mixer;
@@ -38,10 +40,20 @@ namespace Signaler
         private readonly IHubContext<WebRTCHub> _webRTCHub;
         private readonly ILogger<PeerConnectionManager> _logger;
 
-
         private readonly Mixer _mixer;
         private readonly Opusenc _opusenc = new Opusenc();
         private readonly Opusdec _opudec = new Opusdec();
+
+        private readonly List<(ushort, string)> _connectedUsers; //denis
+
+        private AudioExtrasSource _audioExtrasSource;
+
+        public event Action _onSendFromAudioStreamComplete;
+        public event Action OnSendFromAudioStreamComplete;
+
+        public int _audioSamplePeriodMilliseconds = 20;
+
+        public event EncodedSampleDelegate OnAudioSourceEncodedSample;
 
         private int i = 0;
         private readonly object _lock = new { };
@@ -76,12 +88,15 @@ namespace Signaler
             BinaryFolder = @"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin",
         };
 
+        public object WindowsAudioEndPoint { get; private set; }
+
         public PeerConnectionManager(ILogger<PeerConnectionManager> logger, IHubContext<WebRTCHub> webRTCHub, Mixer mixer)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _webRTCHub = webRTCHub ?? throw new ArgumentNullException(nameof(webRTCHub));
             _peerConnections ??= new ConcurrentDictionary<string, RTCPeerConnection>();
             _mixer = mixer;
+            _audioExtrasSource = new AudioExtrasSource();
 
             Task.Run(_mixer.StartAudioProcess);
         }
@@ -90,11 +105,30 @@ namespace Signaler
         {
             var peerConnection = new RTCPeerConnection(_config);
 
-            var audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false,
-              //new List<SDPAudioVideoMediaFormat> { new SDPAudioVideoMediaFormat(new AudioFormat(AudioCodecsEnum.OPUS, 111, 48000, 2, "minptime=20;maxptime=50;useinbandfec=1;")) }, MediaStreamStatusEnum.SendRecv);
-              new List<SDPAudioVideoMediaFormat> { new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.PCMU) }, MediaStreamStatusEnum.SendRecv);
+            string[] readAllAudios = Directory.GetFiles(@"C:\temp\wavs\");
+            var audioCounter = readAllAudios.Count();
 
-            peerConnection.addTrack(audioTrack);
+            // se o file não existir, toca musica padrão;
+
+            var file = @"C:\temp\wavs\testeDefault*.wav";
+
+            //foreach (var audio in readAllAudios)
+            //{
+            //    var count = 1;
+            //    if (audioCounter > 0)
+            //        file = @"C:\temp\wavs\" + audio.ToString() + ".wav";
+            //}
+
+
+
+            //toca um file .wav / .raw
+            var audioSource = new AudioExtrasSource(new AudioEncoder(), new AudioSourceOptions { AudioSource = AudioSourcesEnum.Music, MusicInputSamplingRate = AudioSamplingRatesEnum.Rate8KHz, MusicFile = file });
+            MediaStreamTrack audioTrackStream = new MediaStreamTrack(audioSource.GetAudioSourceFormats(), MediaStreamStatusEnum.SendRecv);
+            peerConnection.addTrack(audioTrackStream);
+            audioSource.OnAudioSourceEncodedSample += peerConnection.SendAudio;
+            peerConnection.OnAudioFormatsNegotiated += (formats) => audioSource.SetAudioSourceFormat(formats.First());
+            _audioExtrasSource = audioSource;
+
 
             peerConnection.onicegatheringstatechange += (RTCIceGatheringState obj) =>
             {
@@ -122,49 +156,40 @@ namespace Signaler
                 }
             };
 
-            peerConnection.onconnectionstatechange += (state) =>
-            {
-                if (state == RTCPeerConnectionState.closed || state == RTCPeerConnectionState.disconnected || state == RTCPeerConnectionState.failed)
-                {
-                    _peerConnections.TryRemove(id, out _);
-                }
-                else if (state == RTCPeerConnectionState.connected)
-                {
-                    _logger.LogDebug("Peer connection connected.");
-                }
-            };
-
             var offerSdp = peerConnection.createOffer(null);
             await peerConnection.setLocalDescription(offerSdp);
             _peerConnections.TryAdd(id, peerConnection);
             return offerSdp;
         }
 
+
         public void SetAudioRelay(RTCPeerConnection peerConnection, string connectionId, IList<User> usersToRelay)
         {
             peerConnection.OnRtpPacketReceived += (rep, media, pkt) =>
             {
-                if (media == SDPMediaTypesEnum.audio)
+                _mixer.AddRawPacket(pkt.Payload);
+                _mixer.AddRawPacket(pkt);
+                //_mixer.Mix2Audio();
+
+
+               
+
+                _mixer.HasAudioData += (object e, TesteEventArgs args) =>
                 {
-                    try
+                    foreach (var user in usersToRelay)
                     {
-                        _mixer.AddRawPacket(pkt);
-                        _mixer.AddRawPacket(pkt.Payload);
-                    }
-                    catch (Exception e)
-                    {
-                        _logger.LogError(e.ToString());
+                        //user.PeerConnection?.SendRtpRaw(SDPMediaTypesEnum.audio, args.bytes, args.Timestamp, 0, 0);
+                        user.PeerConnection?.SendRtpRaw(SDPMediaTypesEnum.audio, pkt.Payload, pkt.Header.Timestamp, pkt.Header.MarkerBit, pkt.Header.PayloadType);
                     }
 
-                    //foreach (var user in usersToRelay)
-                    //    user.PeerConnection?.SendRtpRaw(SDPMediaTypesEnum.audio, pkt.Payload, pkt.Header.Timestamp, pkt.Header.MarkerBit, pkt.Header.PayloadType);
-                }
+                };
+
+               // _audioExtrasSource.StartAudio();
+                
+
             };
 
-            _mixer.HasAudioData += (object e, TesteEventArgs args) =>
-            {              
-                peerConnection.SendRtpRaw(SDPMediaTypesEnum.audio, args.bytes, args.Timestamp, 0, 0);
-            };
+
         }
 
         public void SetRemoteDescription(string id, RTCSessionDescriptionInit rtcSessionDescriptionInit)
@@ -179,32 +204,6 @@ namespace Signaler
             pc.addIceCandidate(iceCandidate);
         }
 
-        private RTPSession CreateRtpSession(List<SDPAudioVideoMediaFormat> audioFormats)
-        {
-            var rtpSession = new RTPSession(false, false, false, IPAddress.Loopback);
-            bool hasAudio = false;
-
-            if (audioFormats != null && audioFormats.Count > 0)
-            {
-                var audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, audioFormats, MediaStreamStatusEnum.SendRecv);
-                rtpSession.addTrack(audioTrack);
-                hasAudio = true;
-            }
-
-            var sdpOffer = rtpSession.CreateOffer(null);
-
-            // Because the SDP being written to the file is the input to ffplay the connection ports need to be changed
-            // to the ones ffplay will be listening on.
-            if (hasAudio)
-            {
-                sdpOffer.Media.Single(x => x.Media == SDPMediaTypesEnum.audio).Port = 8082;
-            }
-
-            rtpSession.Start();
-            rtpSession.SetDestination(SDPMediaTypesEnum.audio, new IPEndPoint(IPAddress.Loopback, 8082), new IPEndPoint(IPAddress.Loopback, 8083));
-
-            return rtpSession;
-        }
 
         public RTCPeerConnection Get(string id)
         {
@@ -212,95 +211,9 @@ namespace Signaler
             if (pc.Value != null) return pc.Value;
             return null;
         }
+
+
     }
 
-    public static class StreamExtension
-    {
-        public static byte[] ToArray(this Stream stream)
-        {
-            byte[] buffer = new byte[4096];
-            int reader = 0;
-            MemoryStream memoryStream = new MemoryStream();
-            while ((reader = stream.Read(buffer, 0, buffer.Length)) != 0)
-                memoryStream.Write(buffer, 0, reader);
-            return memoryStream.ToArray();
-        }
-    }
 }
 
-
-
-
-//_opudec.DecodeRawAudio(pkt.Payload);
-//_opusenc.EncodeRawAudioPacket(pkt.Payload);
-
-//    //var encoder = OpusEncoder.Create(48000, 1, Concentus.Enums.OpusApplication.OPUS_APPLICATION_VOIP);
-//    //encoder.EnableAnalysis = true;
-//    //encoder.Bitrate = (64 * 1024);
-//    //encoder.Complexity = 5;
-//    //encoder.PacketLossPercent = 0;
-//    //encoder.UseInbandFEC = true;
-//    //encoder.UseVBR = false;
-//    //encoder.UseConstrainedVBR = false;
-
-//    //var outStream = new MemoryStream();
-//    //var oggin = new OpusOggWriteStream(encoder, outStream);
-//    //lock(_lock)
-//    //{
-//    //    var audioStream = new MemoryStream(pkt.Payload, 28, pkt.Payload.Length - 28, true, true);
-//    //    using var fl = File.Create(@$"C:\temp\{i}.opus");
-//    //    fl.Write(audioStream.GetBuffer(), 0, (int)audioStream.Length);
-//    //    fl.Close();
-//    //    i++;
-//    //}
-
-//    //var outStream = new MemoryStream();
-//    //var mediaAnalisys = FFProbe.Analyse(audioStream, int.MaxValue, options);
-//    //audioStream.Position = 0;
-
-//    //FFMpegArguments
-//    //    .FromPipeInput(new StreamPipeSource(audioStream), options =>
-//    //    {
-//    //        //options.WithAudioCodec("OPUS");
-//    //        //options.WithDuration(mediaAnalisys.Duration);
-//    //    })
-//    //    //.AddPipeInput(new StreamPipeSource(audioStream2), options =>
-//    //    //{
-//    //    //    options.WithDuration(durationAudio2);
-//    //    //})
-//    //    .OutputToPipe(new StreamPipeSink(outStream), options =>
-//    //    {
-//    //        options.ForceFormat("mp3");
-//    //        //options.WithCustomArgument(@"-filter_complex amerge=inputs=2 -ac 2");
-//    //    })
-//    //    .NotifyOnOutput((str, dt) =>
-//    //    {
-//    //        _logger.LogInformation(str);
-//    //    })
-//    //    .ProcessSynchronously(true, options);
-
-//    //using (var fileIn = new MemoryStream(pkt.Payload))
-//    //using (var pcmStream = new MemoryStream())
-//    //{
-//    //var decoder = opusdecoder.create(48000, 1);
-//    //var oggin = new opusoggreadstream(decoder, filein);
-
-//    //    while (oggIn.HasNextPacket)
-//    //    {
-//    //        short[] packet = oggIn.DecodeNextPacket();
-//    //        if (packet != null)
-//    //        {
-//    //            for (int i = 0; i < packet.Length; i++)
-//    //            {
-//    //                var bytes = BitConverter.GetBytes(packet[i]);
-//    //                pcmStream.Write(bytes, 0, bytes.Length);
-//    //            }
-//    //        }
-//    //    }
-
-//    //    pcmStream.Position = 0;
-
-//    //    var wavStream = new RawSourceWaveStream(pcmStream, new WaveFormat(48000, 1));
-//    //    var sampleProvider = wavStream.ToSampleProvider();
-//    //    WaveFileWriter.CreateWaveFile16(Path.Combine(Directory.GetCurrentDirectory(), "AAAAAAAAAAAAAA.wav"), sampleProvider);
-//    //}

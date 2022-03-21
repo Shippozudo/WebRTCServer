@@ -48,8 +48,8 @@ namespace Signaler.Hubs
         public override Task OnDisconnectedAsync(Exception exception)
         {
             var user = _userManager.GetAll().Where(u => u.ConnectionId == Context.ConnectionId).Single();
-            var room = _roomManager.GetAll().Where(r => r.Id == user.Room.Id).Single();
-            room.RemoveUser(user);
+            var room = _roomManager.GetAll().Where(r => r.Id == user?.Room?.Id).FirstOrDefault();
+            room?.RemoveUser(user);
             user.Room = null;
             _userManager.Delete(user.Id);
             _logger.LogInformation("Conexão no Hub RTC finalizada! {0} | {1}", Context.ConnectionId, exception?.ToString() ?? string.Empty);
@@ -177,7 +177,7 @@ namespace Signaler.Hubs
         /// </summary>
         public void AddIceCandidate(RTCIceCandidateInit iceCandidate)
         {
-            var user = _userManager.GetAll().Where(u => u.ConnectionId == Context.ConnectionId).Single();
+            var user = _userManager.GetAll().Where(u => u.ConnectionId == Context.ConnectionId).SingleOrDefault();
             //var room = _roomManager.GetAll().Where(r => r.Id == user.Room.Id).Single();
             _peerConnectionManager.AddIceCandidate(user.Id, iceCandidate);
         }

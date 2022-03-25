@@ -41,8 +41,8 @@ namespace Signaler
         private readonly ILogger<PeerConnectionManager> _logger;
 
         private readonly Mixer _mixer;
-        private readonly Opusenc _opusenc = new Opusenc();
-        private readonly Opusdec _opudec = new Opusdec();
+       // private readonly Opusenc _opusenc = new Opusenc();
+        //private readonly Opusdec _opudec = new Opusdec();
 
         private readonly List<(ushort, string)> _connectedUsers; //denis
 
@@ -103,31 +103,14 @@ namespace Signaler
 
         public async Task<RTCSessionDescriptionInit> CreateServerOffer(string id)
         {
+
             var peerConnection = new RTCPeerConnection(_config);
 
-            string[] readAllAudios = Directory.GetFiles(@"C:\temp\wavs\");
-            var audioCounter = readAllAudios.Count();
+            var audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false,
+                         //new List<SDPAudioVideoMediaFormat> { new SDPAudioVideoMediaFormat(new AudioFormat(AudioCodecsEnum.OPUS, 111, 48000, 2, "minptime=20;maxptime=50;useinbandfec=1;")) }, MediaStreamStatusEnum.SendRecv);
+                         new List<SDPAudioVideoMediaFormat> { new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.PCMU) }, MediaStreamStatusEnum.SendRecv);
 
-            // se o file não existir, toca musica padrão;
-
-            var file = @"C:\temp\wavs\testeDefault*.wav";
-
-            //foreach (var audio in readAllAudios)
-            //{
-            //    var count = 1;
-            //    if (audioCounter > 0)
-            //        file = @"C:\temp\wavs\" + audio.ToString() + ".wav";
-            //}
-
-
-
-            //toca um file .wav / .raw
-            var audioSource = new AudioExtrasSource(new AudioEncoder(), new AudioSourceOptions { AudioSource = AudioSourcesEnum.Music, MusicInputSamplingRate = AudioSamplingRatesEnum.Rate8KHz, MusicFile = file });
-            MediaStreamTrack audioTrackStream = new MediaStreamTrack(audioSource.GetAudioSourceFormats(), MediaStreamStatusEnum.SendRecv);
-            peerConnection.addTrack(audioTrackStream);
-            audioSource.OnAudioSourceEncodedSample += peerConnection.SendAudio;
-            peerConnection.OnAudioFormatsNegotiated += (formats) => audioSource.SetAudioSourceFormat(formats.First());
-            _audioExtrasSource = audioSource;
+            peerConnection.addTrack(audioTrack);
 
 
             peerConnection.onicegatheringstatechange += (RTCIceGatheringState obj) =>
@@ -167,12 +150,11 @@ namespace Signaler
         {
             peerConnection.OnRtpPacketReceived += (rep, media, pkt) =>
             {
-                _mixer.AddRawPacket(pkt.Payload);
-                _mixer.AddRawPacket(pkt);
-                //_mixer.Mix2Audio();
+                //_mixer.AddRawPacket(pkt.Payload);
+                //_mixer.AddRawPacket(pkt);
+                //_mixer.Merge2Audio();
+                _mixer.FFMpegAmix();
 
-
-               
 
                 _mixer.HasAudioData += (object e, TesteEventArgs args) =>
                 {

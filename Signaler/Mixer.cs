@@ -2,6 +2,7 @@
 using FFMpegCore.Pipes;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 using SIPSorcery.Net;
 using System;
 using System.Collections.Concurrent;
@@ -47,8 +48,9 @@ namespace Signaler
         public void StartAudioProcess()
         {
             Task.Run(ProcessAudio);
-            Task.Run(Merge2Audio);
+            //Task.Run(Merge2Audio);
             Task.Run(ProcessRTPPacket);
+            Task.Run(FFMpegAmix);
         }
 
 
@@ -65,9 +67,10 @@ namespace Signaler
                         using var tmpStream = new MemoryStream();
                         //using var tmpStream = new MemoryStream((_audioBuffer as MemoryStream).ToArray());
 
+
                         while (_queue.TryDequeue(out var pkt))
                             tmpStream.Write(pkt.Payload, 0, pkt.Payload.Length);
-                                             
+
 
                         var waveFormat = WaveFormat.CreateMuLawFormat(8000, 1);
                         var reader = new RawSourceWaveStream(tmpStream, waveFormat);
@@ -78,7 +81,7 @@ namespace Signaler
                         convertedStream.Read(bytes, 0, (int)convertedStream.Length);
                         HasAudioData.Invoke(this, new TesteEventArgs { bytes = bytes, Timestamp = _timestamp++ });
 
-                        Task.Delay(10);
+
 
                     }
                     catch (Exception e)
@@ -97,62 +100,132 @@ namespace Signaler
             public uint Timestamp { get; set; }
         }
 
-        public void Merge2Audio()
+
+
+        public void FFMpegAmix()
+        {
+            var ffOptions = new FFOptions
+            {
+                BinaryFolder = @"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin",
+                TemporaryFilesFolder = @"C:\temp\wavs\"
+            };
+
+            FFMpegArguments audioFileInput = null;
+
+            var audioFileNames = Directory.GetFiles(@"C:\temp\wavs\audio");
+            var audioDurations = new List<TimeSpan>();
+
+            foreach (var filename in audioFileNames)
+            {
+                var bytes = File.ReadAllBytes(filename);
+                var audioStream = new MemoryStream(bytes);
+                var audioAnalysis = FFProbe.Analyse(audioStream, int.MaxValue, ffOptions);
+                audioDurations.Add(audioAnalysis.Duration);
+
+                if (audioFileInput == null)
+                {
+                    audioFileInput = FFMpegArguments.
+                        FromFileInput(filename, true, options =>
+                         {
+                             options.WithDuration(audioAnalysis.Duration);
+                         });
+
+                }
+                else
+                {
+                    audioFileInput
+                        .AddFileInput(filename, true, options =>
+                        {
+                            options.WithDuration(audioAnalysis.Duration);
+                        });
+                }
+
+            }
+            var outputAudioStream = new MemoryStream();
+            audioFileInput
+                                   .OutputToPipe(new StreamPipeSink(outputAudioStream), options =>
+                                   {
+                                       options.ForceFormat("mp3");
+                                       options.WithCustomArgument(@$"-filter_complex amix=inputs={audioDurations.Count}:duration=longest -ac 2 -vol 256"); //256 = normal volume
+                                   })
+                                .NotifyOnOutput((str, dt) =>
+                                {
+                                    Console.WriteLine(str);
+                                })
+                                .ProcessSynchronously(true, ffOptions);
+
+
+            FileStream fileStream = File.Create(@"C:\temp\wavs\audio\output.mp3"); //FileName.FormatoDesejado
+            fileStream.Write(outputAudioStream.GetBuffer(), 0, (int)outputAudioStream.Length);
+
+            fileStream.Flush();
+            fileStream.Close();
+
+
+        }
+
+
+        public void Merge2Audio() //substituido pelo FFMpeg amix
         {
 
             try
             {
-                var options = new FFOptions
+                var audioFilenames = Directory.GetFiles(@"C:\temp\wavs\audio");
+                var ffOptions = new FFOptions
                 {
                     BinaryFolder = @"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin",
                     TemporaryFilesFolder = @"C:\temp\wavs\"
                 };
+                var audioDurations = new List<TimeSpan>();
 
-                var audio1 = File.ReadAllBytes(@"C:\temp\wavs\mix1mp3.mp3");
-                var audio2 = File.ReadAllBytes(@"C:\temp\wavs\mix2mp3.mp3");
+                FFMpegArguments audioPipeline = null;
 
-                var audioStream1 = new MemoryStream(audio1);
-                var audioStream2 = new MemoryStream(audio2);
+                foreach (var filename in audioFilenames)
+                {
+                    var bytes = File.ReadAllBytes(filename);
+                    var audioStream = new MemoryStream(bytes);
+                    var audioAnalysis = FFProbe.Analyse(audioStream, int.MaxValue, ffOptions);
+                    audioDurations.Add(audioAnalysis.Duration);
 
-                var mediaAnalisys = FFProbe.Analyse(audioStream1, int.MaxValue, options);
-                var mediaAnalisys2 = FFProbe.Analyse(audioStream2, int.MaxValue, options);
-
-                var durationAudio1 = mediaAnalisys.Duration;
-                var durationAudio2 = mediaAnalisys2.Duration;
-
-                var durations = new List<TimeSpan> { durationAudio1, durationAudio2 };
-
-
-                audioStream1.Position = 0;
-                audioStream2.Position = 0;
-
-                var outStream = new MemoryStream();
-
-                FFMpegArguments
-                    .FromPipeInput(new StreamPipeSource(audioStream1), options =>
+                    if (audioPipeline == null)
                     {
-                        options.WithDuration(durationAudio1);
-                    })
-                    .AddPipeInput(new StreamPipeSource(audioStream2), options =>
+                        audioPipeline = FFMpegArguments
+                            .FromPipeInput(new StreamPipeSource(audioStream), options =>
+                            {
+                                options.WithDuration(audioAnalysis.Duration);
+                            });
+                    }
+                    else
                     {
-                        options.WithDuration(durationAudio2);
-                    })
-                    .OutputToPipe(new StreamPipeSink(outStream), options =>
+                        audioPipeline
+                            .AddPipeInput(new StreamPipeSource(audioStream), options =>
+                            {
+                                options.WithDuration(audioAnalysis.Duration);
+                            });
+                    }
+                }
+
+                var outputAudioStream = new MemoryStream();
+
+                audioPipeline
+                    .OutputToPipe(new StreamPipeSink(outputAudioStream), options =>
                     {
-                        options.WithDuration(durations.OrderByDescending(d => d.TotalMilliseconds).First());
+                        options.WithDuration(audioDurations.OrderByDescending(d => d.TotalMilliseconds).FirstOrDefault());
                         options.ForceFormat("mp3");
-                        options.WithCustomArgument(@"-filter_complex amerge=inputs=2 -ac 2");
+                        options.WithCustomArgument(@$"-filter_complex amerge=inputs={audioDurations.Count} -ac 2");
                     })
                     .NotifyOnOutput((str, dt) =>
                     {
                         Console.WriteLine(str);
                     })
-                    .ProcessSynchronously(true, options);
+                    .ProcessSynchronously(true, ffOptions);
+
+                FileStream fileStream = File.Create(@"C:\temp\wavs\audio\mixResult.mp3");
+                fileStream.Write(outputAudioStream.GetBuffer(), 0, (int)outputAudioStream.Length);
+                fileStream.Flush();
+                fileStream.Close();
 
 
-                using FileStream fl = File.Create(@"C:\temp\wavs\mixResult.mp3");
-                fl.Write(outStream.GetBuffer(), 0, (int)outStream.Length);
-                fl.Close();
             }
             catch (Exception ex)
             {
@@ -160,6 +233,9 @@ namespace Signaler
                 Console.WriteLine(ex);
             }
         }
+
+
+
 
         private void ProcessAudio()
         {
@@ -174,22 +250,26 @@ namespace Signaler
                 Task.Delay(0);
                 if (_audioBuffer.Length > 0)
                 {
-                    //for (int i = 0; i < 5000; i++) // 5000 = 10s gravação
-                    //{
-                    //    //tmpMemStream = new MemoryStream((_audioBuffer as MemoryStream).ToArray());
-                    //    //reader = new RawSourceWaveStream(tmpMemStream, waveFormat);
-                    //    //using var convertedStream = WaveFormatConversionStream.CreatePcmStream(reader);
-                    //    //WaveFileWriter.CreateWaveFile(@"C:\\temp\\wavs\\teste" + fileCount.ToString() + ".wav", convertedStream);
+                    for (int i = 0; i < 2500; i++) // 5000 = 10s gravação
+                    {
+                        tmpMemStream = new MemoryStream((_audioBuffer as MemoryStream).ToArray());
+                        reader = new RawSourceWaveStream(tmpMemStream, waveFormat);
+                        using var convertedstream = WaveFormatConversionStream.CreatePcmStream(reader);
+                        WaveFileWriter.CreateWaveFile(@"c:\\temp\\wavs\\teste" + fileCount.ToString() + ".mp3", convertedstream);
 
-                    //    ////salva file .raw
-                    //    //using var fstream = new FileStream(@"C:\\temp\\wavs\\teste" + fileCount.ToString() + ".raw", FileMode.OpenOrCreate);
-                    //    //tmpMemStream.CopyTo(fstream);
-                    //    //fstream.Flush();
+                        //    ////salva file .raw
+                        //    //using var fstream = new FileStream(@"C:\\temp\\wavs\\teste" + fileCount.ToString() + ".raw", FileMode.OpenOrCreate);
+                        //    //tmpMemStream.CopyTo(fstream);
+                        //    //fstream.Flush();
 
+                    }
+                    fileCount++;
 
-                    //}
-
-                    tmpMemStream = new MemoryStream((_audioBuffer as MemoryStream).ToArray());
+                    //tmpMemStream = new MemoryStream((_audioBuffer as MemoryStream).ToArray());
+                    ////salva file.wav
+                    //reader = new RawSourceWaveStream(tmpMemStream, waveFormat);
+                    //using var convertedStream = WaveFormatConversionStream.CreatePcmStream(reader);
+                    //WaveFileWriter.CreateWaveFile(@"C:\\temp\\wavs\\Wav.wav", convertedStream);
 
 
                     //salva file.raw
@@ -198,14 +278,11 @@ namespace Signaler
                     //fstream.Flush();
                     //tmpMemStream.Flush();
 
-                    //salva file.wav
-                    reader = new RawSourceWaveStream(tmpMemStream, waveFormat);
-                    using var convertedStream = WaveFormatConversionStream.CreatePcmStream(reader);
-                    WaveFileWriter.CreateWaveFile(@"C:\\temp\\wavs\\Wav.wav", convertedStream);
+
 
                 }
 
-                //_audioBuffer = new MemoryStream(); // RESETA O BUFFER
+                _audioBuffer = new MemoryStream(); // RESETA O BUFFER
             }
         }
     }

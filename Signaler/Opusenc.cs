@@ -22,6 +22,8 @@ namespace Signaler
             _encoder.PacketLossPercent = 0;
             _encoder.EnableAnalysis = true;
             _encoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
+           
+
 
             _streamBuffer = new MemoryStream();
         }

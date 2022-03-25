@@ -17,10 +17,15 @@ namespace Signaler
         {
             _streamBuffer = new MemoryStream();
             _decoder = new OpusDecoder(48000, 2);
+            
         }
 
         public void DecodeRawAudio(byte[] pktPayload)
         {
+
+            //var a = _decoder.LastPacketDuration =  frameSize;
+
+            
             //_streamBuffer.Write(pktPayload, 0, pktPayload.Length);
 
             //if (_pktCounter == 30)

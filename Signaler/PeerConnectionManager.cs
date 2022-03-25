@@ -150,10 +150,10 @@ namespace Signaler
         {
             peerConnection.OnRtpPacketReceived += (rep, media, pkt) =>
             {
-                //_mixer.AddRawPacket(pkt.Payload);
-                //_mixer.AddRawPacket(pkt);
-                //_mixer.Merge2Audio();
-                _mixer.FFMpegAmix();
+                _mixer.AddRawPacket(pkt.Payload);
+                _mixer.AddRawPacket(pkt);
+                //_mixer.FFMpegAmix();
+                _mixer.FFMpegAmerge();
 
 
                 _mixer.HasAudioData += (object e, TesteEventArgs args) =>

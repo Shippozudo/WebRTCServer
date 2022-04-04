@@ -152,8 +152,7 @@ namespace Signaler
             {
                 _mixer.AddRawPacket(pkt.Payload);
                 _mixer.AddRawPacket(pkt);
-                //_mixer.FFMpegAmix();
-                _mixer.FFMpegAmerge();
+               
 
 
                 _mixer.HasAudioData += (object e, TesteEventArgs args) =>
@@ -162,12 +161,15 @@ namespace Signaler
                     {
                         //user.PeerConnection?.SendRtpRaw(SDPMediaTypesEnum.audio, args.bytes, args.Timestamp, 0, 0);
                         user.PeerConnection?.SendRtpRaw(SDPMediaTypesEnum.audio, pkt.Payload, pkt.Header.Timestamp, pkt.Header.MarkerBit, pkt.Header.PayloadType);
+                        
                     }
 
                 };
 
-               // _audioExtrasSource.StartAudio();
-                
+                // _audioExtrasSource.StartAudio();
+
+               
+
 
             };
 

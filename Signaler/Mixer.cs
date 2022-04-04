@@ -18,6 +18,12 @@ namespace Signaler
     {
         private readonly ILogger<Mixer> _logger;
 
+        //public void FFMpegAmix()
+        int i = 0;
+        int outPutCount = 1;
+        int audioRecordCounter = 5;
+
+
         private uint _timestamp;
         private Stream _audioBuffer;
         private ConcurrentQueue<RTPPacket> _queue;
@@ -177,11 +183,7 @@ namespace Signaler
         //        Console.WriteLine(ex);
         //    }
         //}
-
-        int i = 0;
-        int outPutCount = 1;
-        int audioRecordCounter = 5;
-
+         
         public void FFMpegAmix()
         {
             var outputAudioStream = new MemoryStream();
@@ -239,7 +241,6 @@ namespace Signaler
                                    })
                                    .ProcessSynchronously(true, ffOptions);
 
-
                         FileStream fileStream = File.Create(@$"C:\temp\wavs\output\Output0{outPutCount}.mp3");
                         fileStream.Write(outputAudioStream.GetBuffer(), 0, (int)outputAudioStream.Length);
                         fileStream.Flush();
@@ -257,7 +258,6 @@ namespace Signaler
         private void ProcessAudio()
         {
             int fileCount = 1;
-            int audioRecordCounter = 5;
             var waveFormat = WaveFormat.CreateMuLawFormat(8000, 1);
             var tmpMemStream = new MemoryStream();
             var reader = new RawSourceWaveStream();
@@ -272,23 +272,15 @@ namespace Signaler
                     using var convertedstream = WaveFormatConversionStream.CreatePcmStream(reader);
                     WaveFileWriter.CreateWaveFile(@$"C:\temp\wavs\record\RecordFile" + fileCount.ToString() + ".mp3", convertedstream);
 
-
                     var audioFileNames = Directory.GetFiles(@"C:\temp\wavs\Record");
                     if (audioFileNames.Count() > audioRecordCounter)
                     {
                         FFMpegAmix();
-
                         audioRecordCounter += 5;
                     }
 
                     fileCount++;
                     //tmpMemStream = new MemoryStream((_audioBuffer as MemoryStream).ToArray());
-
-                    //salva file.wav
-                    //reader = new RawSourceWaveStream(tmpMemStream, waveFormat);
-                    //using var convertedStream = WaveFormatConversionStream.CreatePcmStream(reader);
-                    //WaveFileWriter.CreateWaveFile(@"C:\\temp\\wavs\\Wav.wav", convertedStream);
-
 
                     //salva file.raw
                     //using var fstream = new FileStream(@"C:\\temp\\wavs\\Raw.raw", FileMode.OpenOrCreate);
@@ -305,7 +297,6 @@ public class RawSourceWaveStream : WaveStream
 {
     private Stream sourceStream;
     private WaveFormat waveFormat;
-
 
     public RawSourceWaveStream()
     {
@@ -338,7 +329,6 @@ public class RawSourceWaveStream : WaveStream
             this.sourceStream.Position = value;
         }
     }
-
     public override int Read(byte[] buffer, int offset, int count)
     {
         return sourceStream.Read(buffer, offset, count);
